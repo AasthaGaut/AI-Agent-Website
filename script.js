@@ -51,6 +51,8 @@ const conversationLog = [];
 
 //display the first question 
 askNextQuestion();
+console.log("Chatbot conversation started.");
+
 
 function askNextQuestion() {
     if (currentQuestionIndex >= questions.length ) {
@@ -70,10 +72,10 @@ function askNextQuestion() {
         question.options.forEach(option => {
             const btn = document.createElement("button");
             btn.textContent = option;
-            btn.onClick = () => handleUserResponse(option);
+            btn.onclick = () => handleUserResponse(option);
             optionsDiv.appendChild(btn);
         });
-        chatContainer.appendChild(btn); 
+        chatContainer.appendChild(optionsDiv); 
     } else{
         waitForUserInput();
     }
