@@ -1,4 +1,19 @@
 console.log("Chatbot placeholder loaded.");
+
+//firebase configuration and initialization 
+const firebaseConfig = {
+  apiKey: "AIzaSyBUGq6fgCGkd7cMgbllyagS8xvRd5Y2-F8",
+  authDomain: "ai-agent-sample-dialogue.firebaseapp.com",
+  projectId: "ai-agent-sample-dialogue",
+  storageBucket: "ai-agent-sample-dialogue.firebasestorage.app",
+  messagingSenderId: "336645596515",
+  appId: "1:336645596515:web:10d4d46c639299656adf56",
+  measurementId: "G-BW22JV9RT7"
+};
+
+firebase.initializeApp(firebaseConfig);
+const db = firebase.firestore();
+
 const questions = [
   {
     field: "name",
@@ -58,7 +73,7 @@ function askNextQuestion() {
     if (currentQuestionIndex >= questions.length ) {
         console.log("All questions answered:", responses);
         console.log("Conversation log: ", conversationLog);
-        //TODO: trigger firebase submission here to store the user data
+        submitToFirebase(responses, conversationLog);
         return;
     }
 
@@ -124,4 +139,45 @@ function addMessage(text, sender) {
   msgDiv.textContent = text;
   chatContainer.appendChild(msgDiv);
   chatContainer.scrollTop = chatContainer.scrollHeight;
+}
+
+function submitToFirebase(responses, conversationLog) {
+  const docRef = db.collection("loan_applications").doc(); // auto-generates an ID
+
+  docRef.set({
+    applicant_info: {
+      name: responses.name,
+      phone: responses.phone,
+      email: responses.email,
+      created_at: new Date()
+    },
+    property_info: {
+      address: responses.address
+    },
+    loan_details: {
+      investment_type: responses.investment_type,
+      loan_amount: parseFloat(responses.loan_amount),
+      loan_purpose: responses.loan_purpose
+    },
+    requested_terms: {
+      term_months: parseInt(responses.term_months)
+    },
+    application_status: {
+      status: "submitted",
+      notes: "Initial application submitted via AI agent",
+      created_at: new Date(),
+      updated_at: new Date()
+    },
+    conversation_log: {
+      messages: conversationLog
+    }
+  })
+  .then(() => {
+    addMessage("Your application has been submitted successfully!", "bot");
+    console.log("Submission complete.");
+  })
+  .catch((error) => {
+    console.error("Error submitting to Firestore:", error);
+    addMessage("There was an error submitting your application. Please try again.", "bot");
+  });
 }
