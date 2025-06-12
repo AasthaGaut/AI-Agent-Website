@@ -32,6 +32,7 @@ html, body {
   font-size: 16px;
   line-height: 1.5;
   max-width: 90%;
+  align-self: flex-start;
 }
 
 .message.bot {
@@ -43,7 +44,6 @@ html, body {
 .message.user {
   background-color: #1e40af; /* navy blue */
   color: white;
-  align-self: flex-end;
 }
 
 /* Chat input */
