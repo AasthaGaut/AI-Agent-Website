@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { db } from "./firebase";
 import { collection, addDoc, serverTimestamp } from "firebase/firestore";
+import { callGemini } from "./callGemini";
 import "./App.css";
 
 const questions = [
@@ -41,10 +42,19 @@ function App() {
       { text: response, sender: "user" }
     ]);
 
+    // 🔹 NEW: Call Gemini if applicable
+    let extraMessages = [];
+    if (["loan_purpose", "loan_amount"].includes(question.field)) {
+      const clarification = await callGemini(`The user answered: "${response}". Respond with a helpful clarification or follow-up question about their ${question.field.replace("_", " ")}.`);
+      if (clarification) {
+        extraMessages.push({ text: clarification, sender: "bot" });
+      }
+  }
+
     const nextIndex = current + 1;
     if (nextIndex < questions.length) {
       const next = questions[nextIndex];
-      setMessages((prev) => [...prev, { text: next.prompt, sender: "bot" }]);
+      setMessages((prev) => [...prev, ...extraMessages, { text: next.prompt, sender: "bot" }]);
       setCurrent(nextIndex);
     } else {
       setMessages((prev) => [...prev, { text: "Thank you! Submitting your application...", sender: "bot" }]);
