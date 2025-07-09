@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { db } from "./firebase";
 import { collection, addDoc, serverTimestamp } from "firebase/firestore";
 import { callGemini } from "./callGemini";
@@ -15,19 +15,19 @@ const REQUIRED_FIELDS = [
   "term_months"
 ];
 
-function buildChatPrompt(messages, extracted) {
+function buildPrompt(messages, extracted) {
   const filled = Object.keys(extracted);
-  const remaining = REQUIRED_FIELDS.filter((f) => !filled.includes(f));
+  const missing = REQUIRED_FIELDS.filter(f => !filled.includes(f));
 
   const conversation = messages
-    .map((m) => `${m.sender === "user" ? "User" : "Assistant"}: ${m.text}`)
+    .map(m => `${m.sender === "user" ? "User" : "Assistant"}: ${m.text}`)
     .join("\n");
 
-  if (remaining.length === 0) {
-    return `You're a friendly AI loan officer. The user has provided all required information. Thank them and stop asking more questions.`;
+  if (missing.length === 0) {
+    return `You're a professional and friendly AI loan officer. The user has now provided all required information. Politely thank them and confirm the loan application is being submitted. Do not ask for anything else.`;
   }
 
-  return `You're a friendly AI loan officer. Your job is to gather the following loan application fields:
+  return `You are a professional and friendly AI loan officer. Your job is to collect the following loan application fields:
 
 - Full Name
 - Phone Number
@@ -36,15 +36,17 @@ function buildChatPrompt(messages, extracted) {
 - Investment Type (e.g., single-family, multi-family, commercial, primary residence, fix and flip)
 - Loan Amount
 - Loan Purpose (purchase, refinance, renovation)
-- Loan Term (in months)
+- Loan Term in months (e.g., 120 months for a 10-year loan)
+
+Ask for only one missing field at a time in a conversational, natural way. Do not repeat or confirm previously collected information. Do not loop or re-ask anything that’s been answered.
 
 Conversation so far:
 ${conversation}
 
 Fields already collected: ${filled.join(", ") || "none"}
-Remaining fields: ${remaining.join(", ")}
+Remaining fields: ${missing.join(", ")}
 
-Ask ONE conversational question at a time to collect ONE missing field. DO NOT repeat questions. DO NOT confirm again. Once everything is collected, thank the user and STOP.`;
+Ask your next question to collect one missing field.`;
 }
 
 export default function App() {
@@ -53,137 +55,100 @@ export default function App() {
   ]);
   const [input, setInput] = useState("");
   const [submitted, setSubmitted] = useState(false);
+  const [extracted, setExtracted] = useState({});
 
-  const handleSubmit = async (text) => {
-    if (!text.trim()) return;
-
-    const userMsg = { text, sender: "user" };
-    const updatedMessages = [...messages, userMsg];
-    setMessages(updatedMessages);
+  const handleUserInput = async (text) => {
+    const newMessages = [...messages, { text, sender: "user" }];
+    setMessages(newMessages);
     setInput("");
 
-    if (submitted) {
-      setMessages((prev) => [
-        ...prev,
-        { text: "Your application has already been submitted. Let me know if you need anything else!", sender: "bot" }
-      ]);
+    const newExtracted = extractFields(newMessages);
+    setExtracted(newExtracted);
+
+    const allCollected = REQUIRED_FIELDS.every(f => newExtracted[f]);
+
+    if (allCollected && !submitted) {
+      await submitToFirestore(newExtracted, newMessages);
+      setSubmitted(true);
       return;
     }
 
-    const extracted = extractResponses(updatedMessages);
-    const hasAllData = REQUIRED_FIELDS.every((field) => extracted[field]);
-
-    if (hasAllData) {
-      const log = updatedMessages.map((m) => `${m.sender === "user" ? "User" : "Assistant"}: ${m.text}`);
-
-      await addDoc(collection(db, "loan_applications"), {
-        applicant_info: {
-          name: extracted.name,
-          phone: extracted.phone,
-          email: extracted.email
-        },
-        property_info: {
-          address: extracted.address
-        },
-        loan_details: {
-          investment_type: extracted.investment_type,
-          loan_amount: Number(extracted.loan_amount),
-          loan_purpose: extracted.loan_purpose
-        },
-        requested_terms: {
-          term_months: Number(extracted.term_months)
-        },
-        conversation_log: log,
-        created_at: serverTimestamp()
-      });
-
-      const estimate = Number(extracted.loan_amount) * 0.8;
-      setMessages((prev) => [
-        ...prev,
-        { text: "Thanks! Submitting your application...", sender: "bot" },
-        {
-          text: `You're pre-approved for $${estimate.toLocaleString()} at 10% over ${extracted.term_months} months.`,
-          sender: "bot"
-        },
-        { text: "Is there anything else I can help you with today?", sender: "bot" }
-      ]);
-      setSubmitted(true);
-      return; // ✅ stop here
-    }
-
-    const prompt = buildChatPrompt(updatedMessages, extracted);
-    const aiResponse = await callGemini(prompt);
-
-    if (aiResponse) {
-      setMessages((prev) => [...prev, { text: aiResponse, sender: "bot" }]);
+    const prompt = buildPrompt(newMessages, newExtracted);
+    const aiReply = await callGemini(prompt);
+    if (aiReply) {
+      setMessages(prev => [...prev, { text: aiReply, sender: "bot" }]);
     }
   };
 
-  const extractResponses = (messages) => {
-    const data = {};
-    const userMessages = messages.filter((m) => m.sender === "user");
-
-    for (let i = 0; i < userMessages.length; i++) {
-      const text = userMessages[i].text.trim();
-      const lower = text.toLowerCase();
-
-      if (!data.name && /^[a-z]+ [a-z]+$/i.test(text)) {
-        data.name = text;
+  useEffect(() => {
+    const autoSubmit = async () => {
+      if (!submitted && REQUIRED_FIELDS.every(f => extracted[f])) {
+        await submitToFirestore(extracted, messages);
+        setSubmitted(true);
+        setMessages(prev => [
+          ...prev,
+          { text: "Thanks! Submitting your application...", sender: "bot" },
+          {
+            text: `You're pre-approved for $${(extracted.loan_amount * 0.8).toLocaleString()} at 10% over ${extracted.term_months} months.`,
+            sender: "bot"
+          },
+          { text: "Is there anything else I can help you with today?", sender: "bot" }
+        ]);
       }
+    };
+    autoSubmit();
+  }, [extracted, messages, submitted]);
 
-      if (!data.phone && /\d{3}[-.\s]?\d{3}[-.\s]?\d{4}/.test(text)) {
-        data.phone = text;
+  const submitToFirestore = async (data, logMessages) => {
+    const log = logMessages.map(m => `${m.sender === "user" ? "User" : "Assistant"}: ${m.text}`);
+    await addDoc(collection(db, "loan_applications"), {
+      applicant_info: {
+        name: data.name,
+        phone: data.phone,
+        email: data.email
+      },
+      property_info: {
+        address: data.address
+      },
+      loan_details: {
+        investment_type: data.investment_type,
+        loan_amount: Number(data.loan_amount),
+        loan_purpose: data.loan_purpose
+      },
+      requested_terms: {
+        term_months: Number(data.term_months)
+      },
+      conversation_log: log,
+      created_at: serverTimestamp()
+    });
+  };
+
+  const extractFields = (messages) => {
+    const fields = {};
+    const userMsgs = messages.filter(m => m.sender === "user");
+    for (let m of userMsgs) {
+      const text = m.text.toLowerCase();
+
+      if (!fields.name && /^[a-z]+ [a-z]+$/i.test(m.text)) fields.name = m.text;
+      if (!fields.phone && /\d{10}/.test(text.replace(/\D/g, ""))) fields.phone = text.match(/\d{10}/)[0];
+      if (!fields.email && /\S+@\S+\.\S+/.test(m.text)) fields.email = m.text;
+      if (!fields.address && /(road|lane|court|street|drive|boulevard|avenue|circle|way)/i.test(m.text)) fields.address = m.text;
+
+      if (!fields.investment_type && /(single|multi|commercial|primary|flip)/i.test(text)) fields.investment_type = m.text;
+      if (!fields.loan_purpose && /(purchase|refinance|renovation)/i.test(text)) fields.loan_purpose = text.match(/purchase|refinance|renovation/)[0];
+      if (!fields.loan_amount && /\d{4,7}/.test(text.replace(/[^0-9]/g, ""))) {
+        const amt = parseInt(text.replace(/[^0-9]/g, ""));
+        if (amt > 5000 && amt < 10000000) fields.loan_amount = amt;
       }
-
-      if (!data.email && /\S+@\S+\.\S+/.test(text)) {
-        data.email = text;
-      }
-
-      if (
-        !data.address &&
-        /(street|avenue|road|lane|boulevard|drive|court|circle|way)/i.test(lower) &&
-        /\d{2,5}/.test(lower)
-      ) {
-        data.address = text;
-      }
-
-      if (
-        !data.loan_amount &&
-        /\d{4,7}/.test(lower) &&
-        /(borrow|amount|loan|need|request|financ|looking)/i.test(messages[i - 1]?.text || "")
-      ) {
-        const amt = parseInt(text.replace(/[^0-9]/g, ""), 10);
-        if (amt > 5000 && amt < 10000000) {
-          data.loan_amount = amt;
-        }
-      }
-
-      if (
-        !data.loan_purpose &&
-        /(purchase|refinance|renovation|renovate|construction)/i.test(lower)
-      ) {
-        data.loan_purpose = lower.match(/purchase|refinance|renovation|renovate|construction/i)[0];
-      }
-
-      if (
-        !data.investment_type &&
-        /(rental|primary|investment|fix and flip|flip|multi-family|single-family|commercial)/i.test(lower)
-      ) {
-        data.investment_type = lower;
-      }
-
-      if (!data.term_months) {
-        const match = text.match(/\d{1,3}/);
+      if (!fields.term_months && /(\d{1,3})\s?(months)?/.test(text)) {
+        const match = text.match(/(\d{1,3})/);
         if (match) {
-          const months = parseInt(match[0]);
-          if (months >= 6 && months <= 480) {
-            data.term_months = months;
-          }
+          const months = parseInt(match[1]);
+          if (months >= 6 && months <= 480) fields.term_months = months;
         }
       }
     }
-
-    return data;
+    return fields;
   };
 
   return (
@@ -195,7 +160,7 @@ export default function App() {
         className="chat-input"
         value={input}
         onChange={(e) => setInput(e.target.value)}
-        onKeyDown={(e) => e.key === "Enter" && handleSubmit(input)}
+        onKeyDown={(e) => e.key === "Enter" && handleUserInput(input)}
         placeholder="Type your response..."
       />
     </div>
